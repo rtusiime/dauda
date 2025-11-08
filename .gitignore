@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+*.sqlite3
+test_channel_manager.db
+.env
+.venv/
+poetry.lock
