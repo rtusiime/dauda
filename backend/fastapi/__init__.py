@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 import inspect
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, get_type_hints
+
+
+_header_context: ContextVar[Dict[str, str]] = ContextVar("_header_context", default={})
+
+
+def get_request_headers() -> Dict[str, str]:
+    return _header_context.get()
 
 
 class HTTPException(Exception):
@@ -215,13 +223,21 @@ class FastAPI:
             raise RuntimeError(f"Unsupported parameter configuration: {name}")
         return args, kwargs, cleanup
 
-    def handle(self, method: str, path: str, body: Any = None) -> tuple[int, Any, Optional[type]]:
+    def handle(
+        self,
+        method: str,
+        path: str,
+        body: Any = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> tuple[int, Any, Optional[type]]:
         for route in self._routes:
             matches, params = route.match(method, path)
             if not matches:
                 continue
             overrides = self.dependency_overrides
+            cleanup: List[Iterable[Any]] = []
             try:
+                _header_context.set(headers or {})
                 args, kwargs, cleanup = self._prepare_arguments(route, params, body, overrides)
                 result = route.endpoint(*args, **kwargs)
             except HTTPException as exc:
@@ -237,4 +253,4 @@ class FastAPI:
         return 404, {"detail": "Not Found"}, None
 
 
-__all__ = ["APIRouter", "Depends", "FastAPI", "HTTPException"]
+__all__ = ["APIRouter", "Depends", "FastAPI", "HTTPException", "get_request_headers"]

@@ -13,6 +13,7 @@ if TEST_DB_PATH.exists():
 
 os.environ["CHANNEL_MANAGER_DATABASE_URL"] = f"sqlite:///{TEST_DB_PATH}"  # noqa: E501
 
+from app.config import settings  # noqa: E402
 from app.database import SessionLocal  # noqa: E402
 from app.dependencies import get_db  # noqa: E402
 from app.main import app  # noqa: E402
@@ -36,8 +37,25 @@ def create_client() -> TestClient:
     return TestClient(app)
 
 
+def admin_headers(client: TestClient) -> dict[str, str]:
+    resp = client.post(
+        "/auth/login",
+        json={
+            "email": settings.default_admin_email,
+            "password": settings.default_admin_password,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["access_token"]
+    return {"Authorization": f"Bearer {token}"}
+
+
 def create_listing(client: TestClient, name: str = "Room 1") -> int:
-    resp = client.post("/listings", json={"name": name, "timezone": "Africa/Kampala"})
+    resp = client.post(
+        "/listings",
+        json={"name": name, "timezone": "Africa/Kampala"},
+        headers=admin_headers(client),
+    )
     assert resp.status_code == 201, resp.text
     return resp.json()["id"]
 
@@ -46,6 +64,7 @@ def create_channel_link(client: TestClient, listing_id: int, channel: str) -> st
     resp = client.post(
         f"/listings/{listing_id}/channel-links",
         json={"channel": channel, "import_url": None},
+        headers=admin_headers(client),
     )
     assert resp.status_code == 201, resp.text
     return resp.json()["export_token"]
@@ -57,7 +76,11 @@ def test_manual_block_exposed_in_ics() -> None:
     booking_token = create_channel_link(client, listing_id, "BOOKING")
 
     payload = {"start_date": "2024-02-10", "end_date": "2024-02-12", "note": "Walk-in"}
-    resp = client.post(f"/listings/{listing_id}/blocks", json=payload)
+    resp = client.post(
+        f"/listings/{listing_id}/blocks",
+        json=payload,
+        headers=admin_headers(client),
+    )
     assert resp.status_code == 201, resp.text
 
     ics_resp = client.get(f"/ics/{booking_token}.ics")
@@ -76,6 +99,7 @@ def test_conflict_resolution_shadow_manual_block() -> None:
     block_resp = client.post(
         f"/listings/{listing_id}/blocks",
         json={"start_date": "2024-03-10", "end_date": "2024-03-12"},
+        headers=admin_headers(client),
     )
     assert block_resp.status_code == 201
     block_event_id = block_resp.json()["event"]["id"]
@@ -90,11 +114,12 @@ def test_conflict_resolution_shadow_manual_block() -> None:
             "source": "AIRBNB",
             "summary": "Guest Test",
         },
+        headers=admin_headers(client),
     )
     assert import_resp.status_code == 201, import_resp.text
     airbnb_event_id = import_resp.json()["id"]
 
-    conflicts_resp = client.get("/conflicts")
+    conflicts_resp = client.get("/conflicts", headers=admin_headers(client))
     assert conflicts_resp.status_code == 200
     conflicts = conflicts_resp.json()
     assert len(conflicts) == 1
@@ -103,12 +128,15 @@ def test_conflict_resolution_shadow_manual_block() -> None:
     resolve_resp = client.post(
         f"/conflicts/{conflict_id}/resolve",
         json={"winner_event_id": airbnb_event_id, "resolution": "Keep Airbnb"},
+        headers=admin_headers(client),
     )
     assert resolve_resp.status_code == 200, resolve_resp.text
     resolved_conflict = resolve_resp.json()
     assert resolved_conflict["winner_event_id"] == airbnb_event_id
 
-    events_resp = client.get(f"/listings/{listing_id}/events")
+    events_resp = client.get(
+        f"/listings/{listing_id}/events", headers=admin_headers(client)
+    )
     assert events_resp.status_code == 200
     events = events_resp.json()
     shadowed = next(event for event in events if event["id"] == block_event_id)

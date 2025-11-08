@@ -27,6 +27,20 @@ class ConflictStatus(str, Enum):
     RESOLVED = "RESOLVED"
 
 
+class UserRole(str, Enum):
+    ADMIN = "ADMIN"
+    STAFF = "STAFF"
+
+
+@dataclass
+class User:
+    id: int
+    email: str
+    password_hash: str
+    role: UserRole
+    is_active: bool = True
+
+
 @dataclass
 class Listing:
     id: int

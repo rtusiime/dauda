@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dauda Channel Manager</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#0f172a" />
+    <link rel="stylesheet" href="/static/css/styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Dauda Channel Manager</h1>
+      <p class="subtitle">Manage listings, blocks and reservations from any device.</p>
+    </header>
+    <main>
+      <section id="auth-section">
+        <h2>Sign in</h2>
+        <form id="login-form">
+          <label>
+            Email
+            <input type="email" id="email" value="admin@example.com" required />
+          </label>
+          <label>
+            Password
+            <input type="password" id="password" value="ChangeMe123!" required />
+          </label>
+          <button type="submit">Login</button>
+          <p class="hint">Default credentials can be changed from the Settings screen.</p>
+        </form>
+      </section>
+      <section id="dashboard" class="hidden">
+        <div class="toolbar">
+          <h2>Listings</h2>
+          <button id="refresh-btn" type="button">Refresh</button>
+        </div>
+        <div id="message"></div>
+        <ul id="listing-list"></ul>
+      </section>
+    </main>
+    <footer>
+      <p>Install this app to manage reservations offline. Updates sync automatically.</p>
+    </footer>
+    <script src="/static/js/app.js" type="module"></script>
+  </body>
+</html>

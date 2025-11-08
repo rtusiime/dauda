@@ -39,7 +39,11 @@ class Response:
         self.status_code = status_code
         self._data = data
         self._response_class = response_class
-        if isinstance(data, str) or response_class is PlainTextResponse:
+        if (
+            isinstance(data, str)
+            or response_class is not None
+            and getattr(response_class, "media_type", "") != "application/json"
+        ):
             self._text = str(data)
             try:
                 self._json_data = json.loads(self._text)
@@ -69,15 +73,28 @@ class TestClient:
     def __init__(self, app: FastAPI) -> None:
         self.app = app
 
-    def request(self, method: str, path: str, json: Any | None = None) -> Response:
-        status_code, payload, response_class = self.app.handle(method.upper(), path, json)
+    def request(
+        self,
+        method: str,
+        path: str,
+        json: Any | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        status_code, payload, response_class = self.app.handle(
+            method.upper(), path, json, headers=headers
+        )
         return Response(status_code, payload, response_class)
 
-    def get(self, path: str) -> Response:
-        return self.request("GET", path)
+    def get(self, path: str, headers: dict[str, str] | None = None) -> Response:
+        return self.request("GET", path, headers=headers)
 
-    def post(self, path: str, json: Any | None = None) -> Response:
-        return self.request("POST", path, json=json)
+    def post(
+        self,
+        path: str,
+        json: Any | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
+        return self.request("POST", path, json=json, headers=headers)
 
 
 __all__ = ["TestClient"]
