@@ -5,7 +5,7 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from .models import Channel, ConflictStatus, EventSource, EventType
+from .models import Channel, ConflictStatus, EventSource, EventType, UserRole
 
 
 class ListingBase(BaseModel):
@@ -110,3 +110,29 @@ class ConflictRead(BaseModel):
 class ConflictResolutionRequest(BaseModel):
     winner_event_id: int
     resolution: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserCreateRequest(BaseModel):
+    email: str = Field(..., max_length=255)
+    password: str = Field(..., min_length=8)
+    role: UserRole = UserRole.STAFF
+
+
+class UserRead(BaseModel):
+    id: int
+    email: str
+    role: UserRole
+    is_active: bool
+
+    class Config:
+        from_attributes = True

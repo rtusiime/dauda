@@ -7,10 +7,11 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 
+from .auth import enforce_role
 from .database import DatabaseSession
 from .dependencies import get_db
 from .ics import build_ics, events_for_channel
-from .models import EventSource, EventType, Listing
+from .models import Event, EventSource, EventType, Listing, UserRole
 from .schemas import (
     ChannelLinkCreate,
     ChannelLinkRead,
@@ -62,13 +63,20 @@ def _create_event(
 
 
 @router.post("/listings", response_model=ListingRead, status_code=201)
-def create_listing(payload: ListingCreate, db: DatabaseSession = Depends(get_db)) -> ListingRead:
+def create_listing(
+    payload: ListingCreate,
+    db: DatabaseSession = Depends(get_db),
+) -> ListingRead:
+    enforce_role(db, UserRole.ADMIN)
     listing = db.create_listing(payload.name, payload.timezone)
     return ListingRead.model_validate(listing)
 
 
 @router.get("/listings", response_model=list[ListingRead])
-def list_listings(db: DatabaseSession = Depends(get_db)) -> Sequence[ListingRead]:
+def list_listings(
+    db: DatabaseSession = Depends(get_db),
+) -> Sequence[ListingRead]:
+    enforce_role(db, UserRole.ADMIN, UserRole.STAFF)
     return [ListingRead.model_validate(listing) for listing in db.list_listings()]
 
 
@@ -78,8 +86,11 @@ def list_listings(db: DatabaseSession = Depends(get_db)) -> Sequence[ListingRead
     status_code=201,
 )
 def upsert_channel_link(
-    listing_id: int, payload: ChannelLinkCreate, db: DatabaseSession = Depends(get_db)
+    listing_id: int,
+    payload: ChannelLinkCreate,
+    db: DatabaseSession = Depends(get_db),
 ) -> ChannelLinkRead:
+    enforce_role(db, UserRole.ADMIN)
     listing = _ensure_listing(db, listing_id)
     channel_link = db.upsert_channel_link(listing, payload.channel, payload.import_url)
     return ChannelLinkRead.model_validate(channel_link)
@@ -91,8 +102,11 @@ def upsert_channel_link(
     status_code=201,
 )
 def create_manual_block(
-    listing_id: int, payload: ManualBlockRequest, db: DatabaseSession = Depends(get_db)
+    listing_id: int,
+    payload: ManualBlockRequest,
+    db: DatabaseSession = Depends(get_db),
 ) -> ManualBlockResponse:
+    enforce_role(db, UserRole.ADMIN, UserRole.STAFF)
     listing = _ensure_listing(db, listing_id)
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
@@ -119,8 +133,11 @@ def create_manual_block(
     status_code=201,
 )
 def register_imported_event(
-    listing_id: int, payload: ImportedEventRequest, db: DatabaseSession = Depends(get_db)
+    listing_id: int,
+    payload: ImportedEventRequest,
+    db: DatabaseSession = Depends(get_db),
 ) -> EventRead:
+    enforce_role(db, UserRole.ADMIN, UserRole.STAFF)
     listing = _ensure_listing(db, listing_id)
     if payload.source not in {EventSource.AIRBNB, EventSource.BOOKING}:
         raise HTTPException(status_code=400, detail="Imported events must originate from a channel")
@@ -139,22 +156,32 @@ def register_imported_event(
 
 
 @router.get("/listings/{listing_id}/events", response_model=list[EventRead])
-def list_events(listing_id: int, db: DatabaseSession = Depends(get_db)) -> list[EventRead]:
+def list_events(
+    listing_id: int,
+    db: DatabaseSession = Depends(get_db),
+) -> list[EventRead]:
+    enforce_role(db, UserRole.ADMIN, UserRole.STAFF)
     listing = _ensure_listing(db, listing_id)
     events = db.list_events(listing)
     return [EventRead.model_validate(event) for event in events]
 
 
 @router.get("/conflicts", response_model=list[ConflictRead])
-def get_conflicts(db: DatabaseSession = Depends(get_db)) -> list[ConflictRead]:
+def get_conflicts(
+    db: DatabaseSession = Depends(get_db),
+) -> list[ConflictRead]:
+    enforce_role(db, UserRole.ADMIN, UserRole.STAFF)
     conflicts = db.list_conflicts()
     return [ConflictRead.model_validate(conflict) for conflict in conflicts]
 
 
 @router.post("/conflicts/{conflict_id}/resolve", response_model=ConflictRead)
 def resolve_conflict_endpoint(
-    conflict_id: int, payload: ConflictResolutionRequest, db: DatabaseSession = Depends(get_db)
+    conflict_id: int,
+    payload: ConflictResolutionRequest,
+    db: DatabaseSession = Depends(get_db),
 ) -> ConflictRead:
+    enforce_role(db, UserRole.ADMIN, UserRole.STAFF)
     conflict = db.get_conflict(conflict_id)
     if conflict is None:
         raise HTTPException(status_code=404, detail="Conflict not found")

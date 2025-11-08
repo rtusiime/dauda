@@ -1,11 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import secrets
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from .config import settings
-from .models import Channel, ChannelLink, Conflict, ConflictStatus, Event, EventSource, EventType, Listing
+from .models import (
+    Channel,
+    ChannelLink,
+    Conflict,
+    ConflictStatus,
+    Event,
+    EventSource,
+    EventType,
+    Listing,
+    User,
+    UserRole,
+)
 
 
 class Database:
@@ -20,7 +31,16 @@ class Database:
         self.events: Dict[int, Event] = {}
         self.events_by_listing: Dict[int, List[int]] = {}
         self.conflicts: Dict[int, Conflict] = {}
-        self._counters = {"listing": 0, "channel_link": 0, "event": 0, "conflict": 0}
+        self.users: Dict[int, User] = {}
+        self.users_by_email: Dict[str, int] = {}
+        self.auth_tokens: Dict[str, int] = {}
+        self._counters = {
+            "listing": 0,
+            "channel_link": 0,
+            "event": 0,
+            "conflict": 0,
+            "user": 0,
+        }
 
     def _next_id(self, name: str) -> int:
         self._counters[name] += 1
@@ -131,6 +151,20 @@ class Database:
     def list_events(self, listing: Listing) -> List[Event]:
         return sorted(listing.events, key=lambda event: event.start_utc)
 
+    def find_event_by_external_id(
+        self, listing: Listing, source: EventSource, external_res_id: str
+    ) -> Optional[Event]:
+        event_ids = self.events_by_listing.get(listing.id, [])
+        for event_id in event_ids:
+            event = self.events[event_id]
+            if (
+                event.source == source
+                and event.external_res_id == external_res_id
+                and not event.is_shadowed
+            ):
+                return event
+        return None
+
     def list_conflicts(self) -> List[Conflict]:
         return sorted(self.conflicts.values(), key=lambda conflict: conflict.created_at, reverse=True)
 
@@ -156,6 +190,37 @@ class Database:
         if link_id is None:
             return None
         return self.channel_links.get(link_id)
+
+    # -- User management -------------------------------------------------
+
+    def create_user(self, email: str, password_hash: str, role: UserRole) -> User:
+        if email in self.users_by_email:
+            raise ValueError("Email already registered")
+        user_id = self._next_id("user")
+        user = User(id=user_id, email=email, password_hash=password_hash, role=role)
+        self.users[user_id] = user
+        self.users_by_email[email] = user_id
+        return user
+
+    def get_user(self, user_id: int) -> Optional[User]:
+        return self.users.get(user_id)
+
+    def get_user_by_email(self, email: str) -> Optional[User]:
+        user_id = self.users_by_email.get(email)
+        if user_id is None:
+            return None
+        return self.users.get(user_id)
+
+    def create_auth_token(self, user: User) -> str:
+        token = secrets.token_urlsafe(32)
+        self.auth_tokens[token] = user.id
+        return token
+
+    def get_user_by_token(self, token: str) -> Optional[User]:
+        user_id = self.auth_tokens.get(token)
+        if user_id is None:
+            return None
+        return self.users.get(user_id)
 
 
 _DATABASES: Dict[str, Database] = {}
