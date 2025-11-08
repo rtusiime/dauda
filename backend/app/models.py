@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 import secrets
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-
-from sqlalchemy import Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import declarative_base, relationship
-
-Base = declarative_base()
-
+from typing import Optional
 
 class Channel(str, Enum):
     AIRBNB = "AIRBNB"
@@ -31,66 +27,81 @@ class ConflictStatus(str, Enum):
     RESOLVED = "RESOLVED"
 
 
-class Listing(Base):
-    __tablename__ = "listings"
-
-    id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False)
-    timezone = Column(String(64), nullable=False, default="Africa/Kampala")
-    active = Column(Boolean, default=True, nullable=False)
-
-    channel_links = relationship("ChannelLink", back_populates="listing", cascade="all, delete-orphan")
-    events = relationship("Event", back_populates="listing", cascade="all, delete-orphan")
+@dataclass
+class Listing:
+    id: int
+    name: str
+    timezone: str
+    active: bool = True
+    channel_links: list["ChannelLink"] = field(default_factory=list)
+    events: list["Event"] = field(default_factory=list)
 
 
-class ChannelLink(Base):
-    __tablename__ = "channel_links"
+@dataclass
+class ChannelLink:
+    id: int
+    listing_id: int
+    channel: Channel
+    import_url: Optional[str]
+    export_token: str
 
-    id = Column(Integer, primary_key=True)
-    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=False, index=True)
-    channel = Column(SAEnum(Channel), nullable=False)
-    import_url = Column(Text, nullable=True)
-    export_token = Column(String(64), nullable=False, unique=True, default=lambda: secrets.token_urlsafe(32))
-
-    listing = relationship("Listing", back_populates="channel_links")
-
-
-class Event(Base):
-    __tablename__ = "events"
-
-    id = Column(Integer, primary_key=True)
-    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=False, index=True)
-    type = Column(SAEnum(EventType), nullable=False)
-    source = Column(SAEnum(EventSource), nullable=False)
-    start_utc = Column(DateTime(timezone=True), nullable=False)
-    end_utc = Column(DateTime(timezone=True), nullable=False)
-    guest_name = Column(String(120), nullable=True)
-    external_res_id = Column(String(120), nullable=True)
-    summary = Column(String(120), nullable=True)
-    is_shadowed = Column(Boolean, default=False, nullable=False)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-
-    listing = relationship("Listing", back_populates="events")
-    conflicts_a = relationship("Conflict", foreign_keys="Conflict.event_a_id", back_populates="event_a")
-    conflicts_b = relationship("Conflict", foreign_keys="Conflict.event_b_id", back_populates="event_b")
+    @classmethod
+    def new(cls, link_id: int, *, listing_id: int, channel: Channel, import_url: Optional[str]) -> "ChannelLink":
+        token = secrets.token_urlsafe(32)
+        return cls(id=link_id, listing_id=listing_id, channel=channel, import_url=import_url, export_token=token)
 
 
-class Conflict(Base):
-    __tablename__ = "conflicts"
+@dataclass
+class Event:
+    id: int
+    listing_id: int
+    type: EventType
+    source: EventSource
+    start_utc: datetime
+    end_utc: datetime
+    guest_name: Optional[str] = None
+    external_res_id: Optional[str] = None
+    summary: Optional[str] = None
+    is_shadowed: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-    id = Column(Integer, primary_key=True)
-    listing_id = Column(Integer, ForeignKey("listings.id"), nullable=False, index=True)
-    event_a_id = Column(Integer, ForeignKey("events.id"), nullable=False)
-    event_b_id = Column(Integer, ForeignKey("events.id"), nullable=False)
-    status = Column(SAEnum(ConflictStatus), nullable=False, default=ConflictStatus.OPEN)
-    winner_event_id = Column(Integer, ForeignKey("events.id"), nullable=True)
-    resolution = Column(String(50), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
-    resolved_at = Column(DateTime(timezone=True), nullable=True)
 
-    event_a = relationship("Event", foreign_keys=[event_a_id], back_populates="conflicts_a")
-    event_b = relationship("Event", foreign_keys=[event_b_id], back_populates="conflicts_b")
+@dataclass
+class Conflict:
+    id: int
+    listing_id: int
+    event_a_id: int
+    event_b_id: int
+    status: ConflictStatus = ConflictStatus.OPEN
+    winner_event_id: Optional[int] = None
+    resolution: Optional[str] = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    resolved_at: Optional[datetime] = None
+    event_a: Optional[Event] = None
+    event_b: Optional[Event] = None
 
     @property
     def event_ids(self) -> set[int]:
         return {self.event_a_id, self.event_b_id}
+
+
+class _Metadata:
+    @staticmethod
+    def create_all(bind: object | None = None) -> None:
+        from .database import reset_database
+
+        reset_database()
+
+    @staticmethod
+    def drop_all(bind: object | None = None) -> None:
+        from .database import reset_database
+
+        reset_database()
+
+
+class _Base:
+    metadata = _Metadata()
+
+
+Base = _Base()
+

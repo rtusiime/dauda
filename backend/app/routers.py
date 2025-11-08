@@ -6,13 +6,11 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from .conflicts import resolve_conflict, upsert_conflicts
+from .database import DatabaseSession
 from .dependencies import get_db
 from .ics import build_ics, events_for_channel
-from .models import Channel, ChannelLink, Conflict, Event, EventSource, EventType, Listing
+from .models import EventSource, EventType, Listing
 from .schemas import (
     ChannelLinkCreate,
     ChannelLinkRead,
@@ -29,57 +27,15 @@ from .schemas import (
 router = APIRouter()
 
 
-def _get_listing(db: Session, listing_id: int) -> Listing:
-    listing = db.get(Listing, listing_id)
-    if not listing:
+def _ensure_listing(db: DatabaseSession, listing_id: int) -> Listing:
+    listing = db.get_listing(listing_id)
+    if listing is None:
         raise HTTPException(status_code=404, detail="Listing not found")
     return listing
 
 
-@router.post("/listings", response_model=ListingRead, status_code=201)
-def create_listing(payload: ListingCreate, db: Session = Depends(get_db)) -> Listing:
-    listing = Listing(name=payload.name, timezone=payload.timezone)
-    db.add(listing)
-    db.commit()
-    db.refresh(listing)
-    return listing
-
-
-@router.get("/listings", response_model=list[ListingRead])
-def list_listings(db: Session = Depends(get_db)) -> Sequence[Listing]:
-    stmt = select(Listing).order_by(Listing.id)
-    return list(db.scalars(stmt))
-
-
-@router.post(
-    "/listings/{listing_id}/channel-links",
-    response_model=ChannelLinkRead,
-    status_code=201,
-)
-def upsert_channel_link(
-    listing_id: int, payload: ChannelLinkCreate, db: Session = Depends(get_db)
-) -> ChannelLink:
-    listing = _get_listing(db, listing_id)
-    stmt = select(ChannelLink).where(
-        ChannelLink.listing_id == listing.id, ChannelLink.channel == payload.channel
-    )
-    channel_link = db.scalars(stmt).first()
-    if channel_link:
-        channel_link.import_url = payload.import_url
-    else:
-        channel_link = ChannelLink(
-            listing_id=listing.id,
-            channel=payload.channel,
-            import_url=payload.import_url,
-        )
-    db.add(channel_link)
-    db.commit()
-    db.refresh(channel_link)
-    return channel_link
-
-
 def _create_event(
-    db: Session,
+    db: DatabaseSession,
     listing: Listing,
     *,
     start_utc: datetime,
@@ -92,23 +48,41 @@ def _create_event(
 ) -> tuple[Event, list[int]]:
     if end_utc <= start_utc:
         raise HTTPException(status_code=400, detail="end_utc must be after start_utc")
-
-    event = Event(
-        listing_id=listing.id,
-        type=event_type,
-        source=source,
+    event, conflicts = db.create_event(
+        listing,
         start_utc=start_utc,
         end_utc=end_utc,
+        event_type=event_type,
+        source=source,
         summary=summary,
         guest_name=guest_name,
         external_res_id=external_res_id,
     )
-    db.add(event)
-    db.flush()
-    conflicts = upsert_conflicts(db, event)
-    db.commit()
-    db.refresh(event)
     return event, [conflict.id for conflict in conflicts]
+
+
+@router.post("/listings", response_model=ListingRead, status_code=201)
+def create_listing(payload: ListingCreate, db: DatabaseSession = Depends(get_db)) -> ListingRead:
+    listing = db.create_listing(payload.name, payload.timezone)
+    return ListingRead.model_validate(listing)
+
+
+@router.get("/listings", response_model=list[ListingRead])
+def list_listings(db: DatabaseSession = Depends(get_db)) -> Sequence[ListingRead]:
+    return [ListingRead.model_validate(listing) for listing in db.list_listings()]
+
+
+@router.post(
+    "/listings/{listing_id}/channel-links",
+    response_model=ChannelLinkRead,
+    status_code=201,
+)
+def upsert_channel_link(
+    listing_id: int, payload: ChannelLinkCreate, db: DatabaseSession = Depends(get_db)
+) -> ChannelLinkRead:
+    listing = _ensure_listing(db, listing_id)
+    channel_link = db.upsert_channel_link(listing, payload.channel, payload.import_url)
+    return ChannelLinkRead.model_validate(channel_link)
 
 
 @router.post(
@@ -117,18 +91,16 @@ def _create_event(
     status_code=201,
 )
 def create_manual_block(
-    listing_id: int, payload: ManualBlockRequest, db: Session = Depends(get_db)
+    listing_id: int, payload: ManualBlockRequest, db: DatabaseSession = Depends(get_db)
 ) -> ManualBlockResponse:
-    listing = _get_listing(db, listing_id)
+    listing = _ensure_listing(db, listing_id)
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
-
     tz = ZoneInfo(listing.timezone)
     start_local = datetime.combine(payload.start_date, time(0, 0), tzinfo=tz)
     end_local = datetime.combine(payload.end_date + timedelta(days=1), time(0, 0), tzinfo=tz)
     start_utc = start_local.astimezone(timezone.utc)
     end_utc = end_local.astimezone(timezone.utc)
-
     event, conflicts = _create_event(
         db,
         listing,
@@ -147,12 +119,11 @@ def create_manual_block(
     status_code=201,
 )
 def register_imported_event(
-    listing_id: int, payload: ImportedEventRequest, db: Session = Depends(get_db)
+    listing_id: int, payload: ImportedEventRequest, db: DatabaseSession = Depends(get_db)
 ) -> EventRead:
-    listing = _get_listing(db, listing_id)
+    listing = _ensure_listing(db, listing_id)
     if payload.source not in {EventSource.AIRBNB, EventSource.BOOKING}:
         raise HTTPException(status_code=400, detail="Imported events must originate from a channel")
-
     event, _ = _create_event(
         db,
         listing,
@@ -168,47 +139,40 @@ def register_imported_event(
 
 
 @router.get("/listings/{listing_id}/events", response_model=list[EventRead])
-def list_events(listing_id: int, db: Session = Depends(get_db)) -> list[EventRead]:
-    listing = _get_listing(db, listing_id)
-    stmt = select(Event).where(Event.listing_id == listing.id).order_by(Event.start_utc)
-    return [EventRead.model_validate(event) for event in db.scalars(stmt)]
+def list_events(listing_id: int, db: DatabaseSession = Depends(get_db)) -> list[EventRead]:
+    listing = _ensure_listing(db, listing_id)
+    events = db.list_events(listing)
+    return [EventRead.model_validate(event) for event in events]
 
 
 @router.get("/conflicts", response_model=list[ConflictRead])
-def get_conflicts(db: Session = Depends(get_db)) -> list[ConflictRead]:
-    stmt = select(Conflict).order_by(Conflict.created_at.desc())
-    conflicts = db.scalars(stmt).all()
+def get_conflicts(db: DatabaseSession = Depends(get_db)) -> list[ConflictRead]:
+    conflicts = db.list_conflicts()
     return [ConflictRead.model_validate(conflict) for conflict in conflicts]
 
 
 @router.post("/conflicts/{conflict_id}/resolve", response_model=ConflictRead)
 def resolve_conflict_endpoint(
-    conflict_id: int, payload: ConflictResolutionRequest, db: Session = Depends(get_db)
+    conflict_id: int, payload: ConflictResolutionRequest, db: DatabaseSession = Depends(get_db)
 ) -> ConflictRead:
-    conflict = db.get(Conflict, conflict_id)
-    if not conflict:
+    conflict = db.get_conflict(conflict_id)
+    if conflict is None:
         raise HTTPException(status_code=404, detail="Conflict not found")
     try:
-        conflict = resolve_conflict(
-            db, conflict, winner_event_id=payload.winner_event_id, resolution=payload.resolution
-        )
-        db.commit()
+        resolved = db.resolve_conflict(conflict, payload.winner_event_id, payload.resolution)
     except ValueError as exc:  # pragma: no cover - guard clause
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    db.refresh(conflict)
-    return ConflictRead.model_validate(conflict)
+    return ConflictRead.model_validate(resolved)
 
 
 @router.get("/ics/{token}.ics", response_class=PlainTextResponse)
-def download_ics(token: str, db: Session = Depends(get_db)) -> str:
-    stmt = select(ChannelLink).where(ChannelLink.export_token == token)
-    link = db.scalars(stmt).first()
-    if not link:
+def download_ics(token: str, db: DatabaseSession = Depends(get_db)) -> str:
+    link = db.find_channel_link_by_token(token)
+    if link is None:
         raise HTTPException(status_code=404, detail="Calendar not found")
-
-    listing = link.listing
-    stmt = select(Event).where(Event.listing_id == listing.id)
-    events = list(db.scalars(stmt))
+    listing = db.get_listing(link.listing_id)
+    if listing is None:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    events = db.list_events(listing)
     filtered = events_for_channel(link.channel, events)
-    ics_body = build_ics(listing, link.channel, filtered)
-    return ics_body
+    return build_ics(listing, link.channel, filtered)

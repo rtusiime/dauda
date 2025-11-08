@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 from collections.abc import Generator
 
-from sqlalchemy.orm import Session
-
-from .database import get_session
+from .database import DatabaseSession, get_session
 
 
-def get_db() -> Generator[Session, None, None]:
+def get_db() -> Generator[DatabaseSession, None, None]:
     db = get_session()
     try:
         yield db
